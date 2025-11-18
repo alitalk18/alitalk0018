@@ -490,7 +490,7 @@ async function fetchByCategory({ categoryId }) {
   // );
   // .slice(2 * Math.round(divided[5].length / 3), Math.round(divided[5].length));
 
-  const categoryRes = divided[13]
+  const categoryRes = divided[12]
     // .slice(2 * Math.round(divided[5].length / 3), Math.round(divided[5].length))
     .map((item) =>
       limit(async () => {
