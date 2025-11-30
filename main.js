@@ -22,6 +22,7 @@ import {
   normalizeSpForCompare,
   stripForCompare,
 } from "./utils/normalize.js";
+import { withRetry } from "./utils/withRetry.js";
 
 const API = "https://api-sg.aliexpress.com/sync";
 const METHOD = "aliexpress.affiliate.product.query";
@@ -33,10 +34,15 @@ const TRACKING_ID = process.env.AE_TRACKING_ID;
 const USE_SYNONYM_MAP = true;
 const SYNONYM_KEY_MAP = { 색깔: "색상" };
 
-const limit = pLimit(8); // 동시에 8개만 실행
+const limit = pLimit(10); // 동시에 10개만 실행
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  실패 무해 try/catch, 배열 정규화
+
+const PL_BASE1 = "https://s.click.aliexpress.com/s/";
+const PL_BASE2 = "http://s.click.aliexpress.com/s/";
+const IMAGE_BASE1 = "https://ae-pic-a1.aliexpress-media.com/kf/";
+const IMAGE_BASE2 = "http://ae-pic-a1.aliexpress-media.com/kf/";
 
 const tryCatch = async (fn) => {
   try {
@@ -228,12 +234,6 @@ const FIELDS = [
 ].join(",");
 
 // ───────────────────────── 재시도 유틸 ─────────────────────────
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function calcDelay({ base, factor, attempt, jitter, max }) {
-  const backoff = Math.min(base * Math.pow(factor, attempt), max);
-  const rand = 1 + (Math.random() * 2 - 1) * jitter; // 1±jitter
-  return Math.round(backoff * rand);
-}
 
 /**
  * fetch → JSON 파싱까지 포함한 재시도 래퍼
@@ -301,28 +301,28 @@ async function fetchJsonWithRetry(
 /**
  * 임의 함수 재시도(예: getSkuDetail)
  */
-async function withRetry(fn, opts = {}) {
-  const {
-    retries = 3,
-    base = 800,
-    factor = 2,
-    jitter = 0.3,
-    max = 10000,
-  } = opts;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      const code = err?.cause?.code || err?.code;
-      const transient =
-        code === "ECONNRESET" || code === "ETIMEDOUT" || code === "EAI_AGAIN";
-      if (!transient && attempt === 0) throw err; // 비일시적이면 즉시
-      if (attempt === retries) throw err;
-      const delay = calcDelay({ base, factor, attempt, jitter, max });
-      await sleep(delay);
-    }
-  }
-}
+// export async function withRetry(fn, opts = {}) {
+//   const {
+//     retries = 3,
+//     base = 800,
+//     factor = 2,
+//     jitter = 0.3,
+//     max = 10000,
+//   } = opts;
+//   for (let attempt = 0; attempt <= retries; attempt++) {
+//     try {
+//       return await fn();
+//     } catch (err) {
+//       const code = err?.cause?.code || err?.code;
+//       const transient =
+//         code === "ECONNRESET" || code === "ETIMEDOUT" || code === "EAI_AGAIN";
+//       if (!transient && attempt === 0) throw err; // 비일시적이면 즉시
+//       if (attempt === retries) throw err;
+//       const delay = calcDelay({ base, factor, attempt, jitter, max });
+//       await sleep(delay);
+//     }
+//   }
+// }
 
 function signSha256(params, secret) {
   const base = Object.keys(params)
@@ -483,14 +483,14 @@ async function fetchByCategory({ categoryId }) {
   // .slice(Math.round(divided[1].length / 2), Math.round(divided[1].length))
 
   // ---- divided[5]은 3개로 나눠서 배포
-  // .slice(0, Math.round(divided[5].length / 3));
+  // .slice(0, Math.round(divided[5].length / 3))
   // .slice(
   //   Math.round(divided[5].length / 3),
   //   2 * Math.round(divided[5].length / 3)
-  // );
-  // .slice(2 * Math.round(divided[5].length / 3), Math.round(divided[5].length));
+  // )
+  // .slice(2 * Math.round(divided[5].length / 3), Math.round(divided[5].length))
 
-  const categoryRes = divided[12]
+  const categoryRes = divided[13]
     // .slice(2 * Math.round(divided[5].length / 3), Math.round(divided[5].length))
     .map((item) =>
       limit(async () => {
@@ -538,7 +538,7 @@ async function fetchByCategory({ categoryId }) {
   await Promise.allSettled(categoryRes);
 
   // const categoryRes = async () => {
-  //   let res = await ProductDetail.find({ _id: "1005007938045626" })
+  //   let res = await ProductDetail.find({ _id: "1005007528780320" })
   //     .populate("cId1", "cId cn")
   //     .populate("cId2", "cId cn")
   //     .lean({ virtuals: true });
@@ -650,12 +650,88 @@ async function fetchByCategory({ categoryId }) {
           //   baseDoc.ol = info.original_link;
           // }
 
+          // console.log("item.promotion_link", item.promotion_link);
+
+          // https://s.click.aliexpress.com/s/ 문자열을 빼서 데이터공간 저장 확보
+
           if (
             item.promotion_link &&
             stripForCompare(item.promotion_link) !== ""
           ) {
+            if (
+              item?.promotion_link &&
+              item.promotion_link.startsWith(PL_BASE1)
+            ) {
+              item.promotion_link = item.promotion_link.slice(PL_BASE1.length);
+            } else if (
+              item?.promotion_link &&
+              item.promotion_link.startsWith(PL_BASE2)
+            ) {
+              item.promotion_link = item.promotion_link.slice(PL_BASE2.length);
+            }
             baseDoc.pl = item.promotion_link;
+          } else if (item.pl && stripForCompare(item.pl) !== "") {
+            if (item?.pl && item.pl.startsWith(PL_BASE1)) {
+              item.pl = item.pl.slice(PL_BASE1.length);
+            } else if (item?.pl && item.pl.startsWith(PL_BASE2)) {
+              item.pl = item.pl.slice(PL_BASE2.length);
+            }
+            baseDoc.pl = item.pl;
+
+            // pl값이 비어있으면 새로운 pl값 넣기
+          } else if (!item?.pl && stripForCompare(item.pl) === "") {
+            const pdRes = await tryCatch(() =>
+              withRetry(() => getProductDetailsById(productIds), {
+                retries: 2,
+                base: 800,
+                max: 10000,
+              })
+            );
+
+            const productData = pdRes.ok ? pdRes.value : null;
+            let promotion_link = productData.items[0]._raw.promotion_link;
+
+            if (promotion_link && promotion_link.startsWith(PL_BASE1)) {
+              promotion_link = promotion_link.slice(PL_BASE1.length);
+            } else if (promotion_link && promotion_link.startsWith(PL_BASE2)) {
+              promotion_link = promotion_link.slice(PL_BASE2.length);
+            }
+
+            baseDoc.pl = promotion_link;
           }
+
+          //  ----------------------------il https://ae-pic-a1.aliexpress-media.com/kf/ 데이터베이스 저장공간 줄이기-------------------------------------------
+
+          if (info.image_link && stripForCompare(info.image_link) !== "") {
+            if (info.image_link && info.image_link.startsWith(IMAGE_BASE1)) {
+              info.image_link = info.image_link.slice(IMAGE_BASE1.length);
+            } else if (
+              info.image_link &&
+              info.image_link.startsWith(IMAGE_BASE2)
+            ) {
+              info.image_link = info.image_link.slice(IMAGE_BASE2.length);
+            }
+            baseDoc.il = info.image_link;
+          }
+
+          //  ----------------------------ail https://ae-pic-a1.aliexpress-media.com/kf/ 데이터베이스 저장공간 줄이기-------------------------------------------
+
+          if (
+            info.additional_image_links?.string &&
+            info.additional_image_links?.string.length >= 1
+          ) {
+            const imgLink = [];
+            for (let ImgLink of info.additional_image_links?.string) {
+              if (ImgLink && ImgLink.startsWith(IMAGE_BASE1)) {
+                ImgLink = ImgLink.slice(IMAGE_BASE1.length);
+              } else if (ImgLink && ImgLink.startsWith(IMAGE_BASE2)) {
+                ImgLink = ImgLink.slice(IMAGE_BASE2.length);
+              }
+              imgLink.push(ImgLink);
+            }
+            baseDoc.ail = imgLink;
+          }
+
           if (cId1) {
             baseDoc.cId1 = cId1;
           }
@@ -670,15 +746,6 @@ async function fetchByCategory({ categoryId }) {
           }
           if (info.review_number && Number(info.review_number) !== 0) {
             baseDoc.rn = info.review_number;
-          }
-          if (info.image_link && stripForCompare(info.image_link) !== "") {
-            baseDoc.il = info.image_link;
-          }
-          if (
-            info.additional_image_links?.string &&
-            info.additional_image_links?.string.length >= 1
-          ) {
-            baseDoc.ail = info.additional_image_links?.string;
           }
 
           // const baseDoc = {
@@ -731,33 +798,33 @@ async function fetchByCategory({ categoryId }) {
             )}`;
           const toKey2 = (color, props) =>
             `\u0001${normalizeCForCompare(color)}\u0001${canonSkuProps(props)}`;
-          const toKey3 = (sid, color, props) =>
-            `${String(sid)}
-            \u0001${normalizeSpForCompare(props)}`;
-          const toKey4 = (sid, color, props) =>
-            `${String(sid)}
-            \u0001${canonSkuProps(props)}`;
+          // const toKey3 = (sid, color, props) =>
+          //   `${String(sid)}
+          //   \u0001${normalizeSpForCompare(props)}`;
+          // const toKey4 = (sid, color, props) =>
+          //   `${String(sid)}
+          //   \u0001${canonSkuProps(props)}`;
 
           // 필요한 필드만
 
           const sil = doc?.sku_info?.sil ?? [];
-          const existingIds = new Set(
-            (doc?.sku_info?.sil ?? []).map((d) => String(d?.sId))
-          );
+          // const existingIds = new Set(
+          //   (doc?.sku_info?.sil ?? []).map((d) => String(d?.sId))
+          // );
           const skuMap1 = new Map();
           const skuMap2 = new Map();
-          const skuMap3 = new Map();
-          const skuMap4 = new Map();
+          // const skuMap3 = new Map();
+          // const skuMap4 = new Map();
           for (const sku of sil) {
             const i = toKey1(sku?.c, sku?.sp);
             const j = toKey2(sku?.c, sku?.sp);
-            const k = toKey2(sku?.sId, sku?.sp);
-            const z = toKey2(sku?.sId, sku?.sp);
+            // const k = toKey2(sku?.sId, sku?.sp);
+            // const z = toKey2(sku?.sId, sku?.sp);
 
             skuMap1.set(i, sku);
             skuMap2.set(j, sku);
-            skuMap3.set(k, sku);
-            skuMap4.set(z, sku);
+            // skuMap3.set(k, sku);
+            // skuMap4.set(z, sku);
           }
 
           const newSkus = [];
@@ -768,11 +835,11 @@ async function fetchByCategory({ categoryId }) {
             const sid = String(item1?.sku_id);
             if (sid == null) continue;
 
-            if (!existingIds.has(sid)) {
-              newSkus.push(item1);
-              continue;
-            }
-            const key1 = toKey1(item1?.color, item?.sku_properties);
+            // if (!existingIds.has(sid)) {
+            //   newSkus.push(item1);
+            //   continue;
+            // }
+            const key1 = toKey1(item1?.color, item1?.sku_properties);
 
             const exist1 = skuMap1.get(key1);
             // console.log("exist1:", exist1);
@@ -782,19 +849,22 @@ async function fetchByCategory({ categoryId }) {
               const exist2 = skuMap2.get(key2);
 
               if (!exist2) {
-                const key3 = toKey3(sid, item1?.sku_properties);
-                const exist3 = skuMap3.get(key3);
-
-                if (!exist3) {
-                  const key4 = toKey4(sid, item1?.sku_properties);
-                  const exist4 = skuMap4.get(key4);
-                  if (!exist4) {
-                    newSkus.push(item1);
-                    continue;
-                  }
-                }
+                newSkus.push(item1);
+                continue;
               }
+              // if (!exist2) {
+              //   const key3 = toKey3(sid, item1?.sku_properties);
+              //   const exist3 = skuMap3.get(key3);
+              //   if (!exist3) {
+              //     const key4 = toKey4(sid, item1?.sku_properties);
+              //     const exist4 = skuMap4.get(key4);
+              //     if (!exist4) {
+              //       newSkus.push(item1);
+              //       continue;
+              //     }
+              //   }
             }
+
             // 문제 지점 전후로 세분화 try-catch
             let incomingSale;
             try {
@@ -855,9 +925,7 @@ async function fetchByCategory({ categoryId }) {
             console.log("금일 첫 업데이트!");
 
             const pricePoint = {
-              p: Number(s.price_with_tax),
               s: Number(s.sale_price_with_tax),
-              t: new Date(),
             };
 
             ops.push({
@@ -876,7 +944,7 @@ async function fetchByCategory({ categoryId }) {
                 },
                 arrayFilters: [
                   {
-                    "e.sId": sId,
+                    // "e.sId": sId,
                     $and: [
                       {
                         $or: [
@@ -913,9 +981,7 @@ async function fetchByCategory({ categoryId }) {
             console.log("당일 최저가:!!");
 
             const pricePoint = {
-              p: Number(s.price_with_tax),
               s: Number(s.sale_price_with_tax),
-              t: new Date(),
             };
 
             ops.push({
@@ -963,6 +1029,8 @@ async function fetchByCategory({ categoryId }) {
               const cNorm = normalizeCForCompare(s.color);
               const spCanon = canonSkuProps(s.sku_properties);
 
+              console.log("새로운 업데이트");
+
               return {
                 sId: String(s?.sku_id),
                 c: cNorm ?? "",
@@ -972,9 +1040,7 @@ async function fetchByCategory({ categoryId }) {
                 cur: s.currency ?? "KRW",
                 pd: {
                   [todayKey]: {
-                    p: s.price_with_tax,
                     s: s.sale_price_with_tax,
-                    t: new Date(),
                   },
                 },
               };
