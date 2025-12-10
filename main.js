@@ -556,7 +556,7 @@ async function fetchByCategory({ categoryId }) {
   console.log("dataBaseRes", listTasks.dataBaseRes.length);
   console.log("item", listTasks.item.length);
 
-  const items = (listTasks.item ?? []).filter((p) => Number(p?.volume) >= 170);
+  const items = (listTasks.item ?? []).filter((p) => Number(p?.volume) >= 100);
   const dbs = listTasks.dataBaseRes ?? [];
 
   const merged = [
@@ -1000,7 +1000,7 @@ async function fetchByCategory({ categoryId }) {
                 },
                 arrayFilters: [
                   {
-                    "e.sId": sId,
+                    // "e.sId": sId,
                     $and: [
                       {
                         $or: [
